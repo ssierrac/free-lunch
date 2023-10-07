@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  shared infrastructure
+
+Parameters:
+  Stage:
+    Type: String
+    Default: local
+    AllowedValues:
+      - local
+      - dev
+      - prod
+
+Resources:
+  FreeLunchKitchenNamespaceParam: 
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub /fl-prop/${Stage}/FreeLunchKitchenNamespace
+      Value: "freelunch.kitchen"
+    
+  FreeLunchWarehouseNamespaceParam: 
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub /fl-prop/${Stage}/FreeLunchWarehouseNamespace
+      Value: "freelunch.warehouse"
+
+  FreeLunchNotificationNamespaceParam: 
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub /fl-prop/${Stage}/FreeLunchNotificationNamespace
+      Value: "freelunch.notification"
+
+Outputs:
+  FreeLunchKitchenNamespace:
+    Description: Free Lunch Kitchen namespace parameter
+    Value: !Ref FreeLunchKitchenNamespaceParam
+  FreeLunchWarehouseNamespace:
+    Description: Free Lunch Warehouse namespace parameter
+    Value: !Ref FreeLunchWarehouseNamespaceParam
+  FreeLunchNotificationNamespace:
+    Description: Free Lunch Warehouse namespace parameter
+    Value: !Ref FreeLunchNotificationNamespaceParam
+  FreeLunchKitchenNamespaceValue:
+    Description: Free Lunch Kitchen namespace parameter
+    Value: !GetAtt FreeLunchKitchenNamespaceParam.Value
+  FreeLunchWarehouseNamespaceValue:
+    Description: Free Lunch Warehouse namespace parameter
+    Value: !GetAtt FreeLunchWarehouseNamespaceParam.Value
+  FreeLunchNotificationNamespaceValue:
+    Description: Free Lunch Warehouse namespace parameter
+    Value: !GetAtt FreeLunchNotificationNamespaceParam.Value
