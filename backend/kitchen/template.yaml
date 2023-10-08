@@ -56,8 +56,6 @@ Globals:
       - arm64
     Environment:
       Variables:
-        ORDERS_TABLE: !Ref OrdersTable
-        RECIPES_TABLE: !Ref RecipesTable
         SERVICE_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
         POWERTOOLS_LOGGER_CASE: PascalCase
         POWERTOOLS_SERVICE_NAME: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
@@ -92,15 +90,6 @@ Resources:
           USER_POOL_ID: !Ref FreeLunchKitchenUserPool
           APPLICATION_CLIENT_ID: !Ref FreeLunchKitchenUserPoolClient
           ADMIN_GROUP_NAME: !Ref FreeLunchKitchenApiAdministratorsUserPoolGroup
-          SERVICE_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
-          POWERTOOLS_LOGGER_CASE: PascalCase
-          POWERTOOLS_SERVICE_NAME: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
-          POWERTOOLS_TRACE_DISABLED: "false" # Explicitly disables tracing, default
-          POWERTOOLS_LOGGER_LOG_EVENT: !If [IsProd, "false", "true"] # Logs incoming event, default
-          POWERTOOLS_LOGGER_SAMPLE_RATE: !If [IsProd, "0.1", "0"] # Debug log sampling percentage, default
-          POWERTOOLS_METRICS_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
-          POWERTOOLS_LOG_LEVEL: INFO # Log level for Logger (INFO, DEBUG, etc.), default
-          LOG_LEVEL: INFO # Log level for Logger
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -116,6 +105,44 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${FreeLunchKitchenApiAuthorizerFunction}"
       RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
 
+  KitchenCreateOrderHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: CreateOrderHandler.lambdaHandler
+      Environment:
+        Variables:
+          ORDERS_TABLE: !Ref OrdersTable
+          RECIPES_TABLE: !Ref RecipesTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecipesTable
+      Events:
+        IngestQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt FreeLunchKitchenIngestOrdersQueue.Arn
+            BatchSize: 2
+            MaximumBatchingWindowInSeconds: 5
+            Enabled: true
+            ScalingConfig:
+              MaximumConcurrency: 5
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2020
+        EntryPoints:
+          - src/kitchen_service/CreateOrderHandler.ts
+  KitchenCreateOrderHandlerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${KitchenCreateOrderHandlerFunction}"
+      RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
+  
   #### API Gateway REST API
   FreeLunchKitchenApi:
     Type: AWS::Serverless::Api
@@ -273,7 +300,7 @@ Resources:
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt FreeLunchKitchenIngestOrdersDLQ.Arn
         maxReceiveCount: 1
-      VisibilityTimeout: 20
+      VisibilityTimeout: 60
       Tags:
         - Key: stage
           Value: !Ref Stage
