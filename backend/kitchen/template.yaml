@@ -1,0 +1,390 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+Description: >
+  kitchen micro service
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - ES4000 # Rule disabled because the CatchAll Rule doesn't need a DLQ
+        - ES6000 # Rule disabled because SQS DLOs don't need a RedrivePolicy
+        - WS2001 # Rule disabled because check does not support !ToJsonString transform
+        - ES1001 # Rule disabled because our Lambda functions don't need DestinationConfig.OnFailure
+        - W3002
+
+Parameters:
+  Stage:
+    Type: String
+    Default: local
+    AllowedValues:
+      - local
+      - dev
+      - prod
+  UserPoolAdminGroupName:
+    Description: User pool group name for API administrators
+    Type: String
+    Default: kitchenAdmins
+
+Mappings:
+  LogsRetentionPeriodMap:
+    local:
+      Days: 3
+    dev:
+      Days: 15
+    prod:
+      Days: 30
+  Constants:
+    ProjectName:
+      Value: "Free Lunch"
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+
+Globals:
+  Api:
+    TracingEnabled: true
+    OpenApiVersion: 3.0.1
+  Function:
+    Runtime: nodejs18.x
+    MemorySize: 128
+    Timeout: 30
+    Tracing: Active
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        ORDERS_TABLE: !Ref OrdersTable
+        RECIPES_TABLE: !Ref RecipesTable
+        SERVICE_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+        POWERTOOLS_LOGGER_CASE: PascalCase
+        POWERTOOLS_SERVICE_NAME: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+        POWERTOOLS_TRACE_DISABLED: "false" # Explicitly disables tracing, default
+        POWERTOOLS_LOGGER_LOG_EVENT: !If [IsProd, "false", "true"] # Logs incoming event, default
+        POWERTOOLS_LOGGER_SAMPLE_RATE: !If [IsProd, "0.1", "0"] # Debug log sampling percentage, default
+        POWERTOOLS_METRICS_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+        POWERTOOLS_LOG_LEVEL: INFO # Log level for Logger (INFO, DEBUG, etc.), default
+        LOG_LEVEL: INFO # Log level for Logger
+    Tags:
+      stage: !Ref Stage
+      project: !FindInMap [Constants, ProjectName, Value]
+      namespace: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+
+Resources:
+  #### SSM Parameters
+  # FreeLunchKitchenEventBusNAmeParam:
+  #   Type: AWS::SSM::Parameter
+  #   Properties:
+  #     Type: String
+  #     Name: !Sub /fl-prop/${Stage}/FreeLunchKitchenEventBus
+  #     Value: !GetAtt FreeLunchKitchenEventBus.Arn
+
+  #### Lambda Functions
+  FreeLunchKitchenApiAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src/auth
+      Handler: authorizer.lambdaHandler
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref FreeLunchKitchenUserPool
+          APPLICATION_CLIENT_ID: !Ref FreeLunchKitchenUserPoolClient
+          ADMIN_GROUP_NAME: !Ref FreeLunchKitchenApiAdministratorsUserPoolGroup
+          SERVICE_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+          POWERTOOLS_LOGGER_CASE: PascalCase
+          POWERTOOLS_SERVICE_NAME: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+          POWERTOOLS_TRACE_DISABLED: "false" # Explicitly disables tracing, default
+          POWERTOOLS_LOGGER_LOG_EVENT: !If [IsProd, "false", "true"] # Logs incoming event, default
+          POWERTOOLS_LOGGER_SAMPLE_RATE: !If [IsProd, "0.1", "0"] # Debug log sampling percentage, default
+          POWERTOOLS_METRICS_NAMESPACE: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+          POWERTOOLS_LOG_LEVEL: INFO # Log level for Logger (INFO, DEBUG, etc.), default
+          LOG_LEVEL: INFO # Log level for Logger
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2020
+        EntryPoints:
+          - authorizer.ts
+  FreeLunchKitchenApiAuthorizerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${FreeLunchKitchenApiAuthorizerFunction}"
+      RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
+
+  #### API Gateway REST API
+  FreeLunchKitchenApi:
+    Type: AWS::Serverless::Api
+    DependsOn: KitchenApiGwAccountConfig
+    Properties:
+      StageName: !Ref Stage
+      EndpointConfiguration:
+        Type: REGIONAL
+      Auth:
+        Authorizers:
+          LambdaTokenAuthorizer:
+            FunctionArn: !GetAtt FreeLunchKitchenApiAuthorizerFunction.Arn
+      MethodSettings:
+        - MetricsEnabled: true
+          ResourcePath: /*
+          HttpMethod: "*"
+          LoggingLevel: !If [IsProd, ERROR, INFO]
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 100
+      AccessLogSetting:
+        DestinationArn: !GetAtt FreeLunchKitchenApiLogGroup.Arn
+        Format: !ToJsonString
+          requestId: $context.requestId
+          integration-error: $context.integration.error
+          integration-status: $context.integration.status
+          integration-latency: $context.integration.latency
+          integration-requestId: $context.integration.requestId
+          integration-integrationStatus: $context.integration.integrationStatus
+          response-latency: $context.responseLatency
+          status: $context.status
+      DefinitionBody: !Transform
+        Name: "AWS::Include"
+        Parameters:
+          Location: "api.yaml"
+      Tags:
+        stage: !Ref Stage
+        project: !FindInMap [Constants, ProjectName, Value]
+  
+  FreeLunchKitchenApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+         RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
+  
+  KitchenApiGwAccountConfig:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt FreeLunchKitchenApiGwAccountConfigRole.Arn
+
+  FreeLunchKitchenApiGwAccountConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: apigateway.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  FreeLunchKitchenApiIntegrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: apigateway.amazonaws.com
+      Policies:
+        - PolicyName: AllowSqsIntegration
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueUrl
+                Resource: !GetAtt FreeLunchKitchenIngestOrdersQueue.Arn
+  
+  #### Cognito IDP
+  FreeLunchKitchenUserPool:
+    Type: AWS::Cognito::UserPool
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      UserPoolName: !Sub FreeLunchKitchenUserPool-${Stage}
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+      UsernameAttributes:
+        - email
+      UserPoolTags:
+        stage: !Ref Stage
+        project: !FindInMap [Constants, ProjectName, Value]
+
+  FreeLunchKitchenUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub FreeLunchKitchenUserPoolClient-${Stage}
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      RefreshTokenValidity: 30
+      SupportedIdentityProviders:
+        - COGNITO
+      UserPoolId: !Ref FreeLunchKitchenUserPool
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+      CallbackURLs:
+        - http://localhost
+
+  FreeLunchKitchenUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref FreeLunchKitchenUserPoolClient
+      UserPoolId: !Ref FreeLunchKitchenUserPool
+
+  FreeLunchKitchenApiAdministratorsUserPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      Description: User group for API Administrators
+      GroupName: !Ref UserPoolAdminGroupName
+      Precedence: 0
+      UserPoolId: !Ref FreeLunchKitchenUserPool
+    
+  #### QUEUES
+  FreeLunchKitchenIngestOrdersQueue:
+    Type: AWS::SQS::Queue
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+      QueueName: !Sub FreeLunchKitchenIngestOrdersQueue-${Stage}
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FreeLunchKitchenIngestOrdersDLQ.Arn
+        maxReceiveCount: 1
+      VisibilityTimeout: 20
+      Tags:
+        - Key: stage
+          Value: !Ref Stage
+        - Key: project
+          Value: !FindInMap [Constants, ProjectName, Value]
+        - Key: namespace
+          Value: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+          
+  FreeLunchKitchenIngestOrdersDLQ:
+    Type: AWS::SQS::Queue
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600 # Maximum value, 1,209,600 (14days)
+      QueueName: !Sub FreeLunchKitchenIngestOrdersDLQ-${Stage}
+      Tags:
+        - Key: stage
+          Value: !Ref Stage
+        - Key: project
+          Value: !FindInMap [Constants, ProjectName, Value]
+        - Key: namespace
+          Value: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+
+  #### DYNAMODB TABLES
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: order_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: order_id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: stage
+          Value: !Ref Stage
+        - Key: project
+          Value: !FindInMap [Constants, ProjectName, Value]
+        - Key: namespace
+          Value: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+  RecipesTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: recipe_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: recipe_id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: stage
+          Value: !Ref Stage
+        - Key: project
+          Value: !FindInMap [Constants, ProjectName, Value]
+        - Key: namespace
+          Value: !Sub "{{resolve:ssm:/fl-prop/${Stage}/FreeLunchKitchenNamespace}}"
+
+Outputs:
+  #### API Gateway Outputs
+  BaseUrl:
+    Description: Web service API endpoint
+    Value: !Sub "https://${FreeLunchKitchenApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  ApiUrl:
+    Description: API Gateway endpoint
+    Value: !Sub "https://${FreeLunchKitchenApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}/"
+  
+  #### Cognito Outputs
+  FreeLunchKitchenUserPool:
+    Description: Cognito User Pool ID
+    Value: !Ref FreeLunchKitchenUserPool
+  FreeLunchKitchenUserPoolClient:
+    Description: Cognito User Pool Application Client ID
+    Value: !Ref FreeLunchKitchenUserPoolClient
+  FreeLunchKitchenApiAdministratorsUserPoolGroup:
+    Description: User Pool group name for API administrators
+    Value: !Ref FreeLunchKitchenApiAdministratorsUserPoolGroup
+  CognitoLoginURL:
+    Description: Cognito User Pool Application Client Hosted Login UI URL
+    Value: !Sub https://${FreeLunchKitchenUserPoolClient}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${FreeLunchKitchenUserPoolClient}&response_type=code&redirect_uri=http://localhost
+  CognitoAuthCommand:
+    Description: AWS CLI command for Amazon Cognito User Pool authentication
+    Value: !Sub aws cognito-idp initiate-auth --auth-flow USER_PASSWORD_AUTH --client-id ${FreeLunchKitchenUserPoolClient} --auth-parameters USERNAME=<username>,PASSWORD=<password>
+
+  #### SQS Outputs
+  IngestOrdersQueue:
+    Description: URL for the Ingest SQS Queue
+    Value: !GetAtt FreeLunchKitchenIngestOrdersQueue.QueueUrl
+
+  #### DynamoDB outputs
+  OrdersTable:
+    Description: DynamoDB table storing orders information
+    Value: !Ref OrdersTable
+  RecipesTable:
+    Description: DynamoDB table storing Recipes
+    Value: !Ref RecipesTable
+
+  #### Lambda Functions outputs
+  AuthorizerFunctionName:
+    Description: FreeLunchKitchenApiAuthorizer function name
+    Value: !Ref FreeLunchKitchenApiAuthorizerFunction
+  AuthorizerFunctionArb:
+    Description: FreeLunchKitchenApiAuthorizer function Arn
+    Value: !GetAtt  FreeLunchKitchenApiAuthorizerFunction.Arn
