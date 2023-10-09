@@ -1,14 +1,15 @@
-import { RecipeDBType } from "./Recipe";
-import { marshall } from "@aws-sdk/util-dynamodb";
+import { RandomRecipeDBType, RecipeError } from "./Recipe";
+import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { logger, metrics, tracer } from "./powetools";
 import { Context, SQSEvent, SQSRecord } from "aws-lambda";
 import { MetricUnits } from "@aws-lambda-powertools/metrics";
 import { OrderDBType, OrderError, OrderStatusEnum } from "./Order";
 import type { LambdaInterface } from "@aws-lambda-powertools/commons";
-import { DynamoDBClient, PutItemCommand, PutItemCommandInput, PutItemCommandOutput } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, PutItemCommandInput, PutItemCommandOutput, ScanCommand, ScanCommandInput } from "@aws-sdk/client-dynamodb";
 
 const ddbClient = new DynamoDBClient({})
 const ORDERS_TABLE = process.env.ORDERS_TABLE
+const RECIPES_TABLE = process.env.RECIPES_TABLE
 
 class CreateOrderHandlerFunction implements LambdaInterface {
 
@@ -59,13 +60,13 @@ class CreateOrderHandlerFunction implements LambdaInterface {
         tracer.putAnnotation("order_id", order.order_id)
         logger.info("Constructing DB Entry for order", { order })
         const createDate = new Date()
-        const recipe = await this.getRandomRecipe()
+        const recipe: RandomRecipeDBType = await this.getRandomRecipe()
         const dbEntry: OrderDBType = {
             order_id: order.order_id,
             order_created: createDate.toISOString(),
             order_last_modified_on: createDate.toISOString(),
             order_status: OrderStatusEnum.ACCEPTED,
-            recipe_name: recipe.recipe_id
+            recipe_id: recipe.recipe_id
         }
         logger.info("Record to insert", { dbEntry })
 
@@ -110,17 +111,36 @@ class CreateOrderHandlerFunction implements LambdaInterface {
     }
 
 
-    private async getRandomRecipe(): Promise<RecipeDBType> {
-        let recipe: RecipeDBType = {
-            recipe_id: "test_recipe",
-            ingredients: [
-                { name: "tomato", qty: 1 }
-            ]
+    private async getRandomRecipe(): Promise<RandomRecipeDBType> {
+        try {
+            const ScanCommandInput: ScanCommandInput = {
+                TableName: RECIPES_TABLE,
+                ProjectionExpression: 'recipe_id',
+                ReturnConsumedCapacity: 'TOTAL',
+            };
+            const data = await ddbClient.send(new ScanCommand(ScanCommandInput));
+            if (data.Items) {
+                const items = data.Items.filter((i) => i?.recipe_id);
+                const randomRecipe = items[Math.floor(Math.random() * items.length)]
+                return unmarshall(randomRecipe) as RandomRecipeDBType
+            } else {
+                let error: RecipeError = {
+                    recipe_id: "N/A",
+                    name: "RecipeDBScanError",
+                    message: "Cant get a random recipe",
+                    object: data.$metadata
+                }
+                throw error
+            }
+        } catch (e) {
+            let error: RecipeError = {
+                recipe_id: "N/A",
+                name: "RecipeDBScanError",
+                message: "Cant get a random recipe",
+                object: e
+            }
+            throw error
         }
-
-        //TODO: implement get randmom recipe
-
-        return recipe
     }
 
     private parseOrder(record: SQSRecord): OrderDBType {

@@ -6,6 +6,10 @@ export type RecipeDBType = {
     recipe_last_modified_on?: string
 }
 
+export type RandomRecipeDBType = {
+    recipe_id: string
+}
+
 export type IngredientDBType = {
     name: string
     qty: number

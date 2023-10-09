@@ -3,7 +3,6 @@ import { RecipeDBType, RecipeError } from "./Recipe";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { logger, metrics, tracer } from "./powetools";
 import { Context, APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { MetricUnits } from "@aws-lambda-powertools/metrics";
 import type { LambdaInterface } from "@aws-lambda-powertools/commons";
 import { DynamoDBClient, PutItemCommand, PutItemCommandInput, PutItemCommandOutput } from "@aws-sdk/client-dynamodb";
 
