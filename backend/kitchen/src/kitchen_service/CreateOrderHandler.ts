@@ -1,4 +1,3 @@
-import { error } from "console";
 import { RecipeDBType } from "./Recipe";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { logger, metrics, tracer } from "./powetools";

@@ -143,6 +143,31 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${KitchenCreateOrderHandlerFunction}"
       RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
   
+  KitchenCreateRecipeHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: CreateRecipeHandler.lambdaHandler
+      Environment:
+        Variables:
+          RECIPES_TABLE: !Ref RecipesTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecipesTable
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2020
+        EntryPoints:
+          - src/kitchen_service/CreateRecipeHandler.ts
+  KitchenCreateRecipeHandlerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${KitchenCreateRecipeHandlerFunction}"
+      RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
+  
   #### API Gateway REST API
   FreeLunchKitchenApi:
     Type: AWS::Serverless::Api
@@ -224,6 +249,15 @@ Resources:
                   - sqs:SendMessage
                   - sqs:GetQueueUrl
                 Resource: !GetAtt FreeLunchKitchenIngestOrdersQueue.Arn
+        - PolicyName: AllowLambdaInvocation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: 
+                  - !GetAtt KitchenCreateRecipeHandlerFunction.Arn
   
   #### Cognito IDP
   FreeLunchKitchenUserPool:

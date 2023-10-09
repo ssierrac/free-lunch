@@ -6,7 +6,12 @@ info:
 paths:
   /orders:
     post:
+      tags:
+        - order
+      summary: Add a new order
+      description: Add a new order
       requestBody:
+        description: Create a new order
         content:
           application/json:
             schema:
@@ -14,11 +19,11 @@ paths:
         required: true
       responses:
         "200":
-          description: "200 response"
+          description: "Successful operation"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Empty"
+                $ref: "#/components/schemas/CreateOrderModel"
       security:
         - LambdaTokenAuthorizer: []
       x-amazon-apigateway-request-validator: "Validate body"
@@ -40,6 +45,10 @@ paths:
         passthroughBehavior: "never"
         type: "aws"
     options:
+      tags:
+        - order
+      summary: Add a new order
+      description: Add a new order
       responses:
         "200":
           description: "200 response"
@@ -69,15 +78,68 @@ paths:
           application/json: '{"statusCode": 200}'
         passthroughBehavior: "when_no_match"
         type: "mock"
+  /recipes:
+    post:
+      tags:
+        - recipe
+      summary: Add a new recipe
+      description: Add a new recipe
+      requestBody:
+        description: Create a new recipe
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRecipeModel"
+        required: true
+      responses:
+        "200":
+          description: "Successful operation"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrderModel"
+      security:
+        - LambdaTokenAuthorizer: []
+      x-amazon-apigateway-request-validator: "Validate body"
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [FreeLunchKitchenApiIntegrationRole, Arn]
+        type: "aws_proxy"
+        httpMethod: "POST"
+        uri:
+          "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${KitchenCreateRecipeHandlerFunction.Arn}/invocations"
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "never" 
 components:
   schemas:
     CreateOrderModel:
-      required:
-        - "order_id"
       type: "object"
       properties:
         order_id:
           type: "string"
+      required:
+        - "order_id"
+    CreateRecipeModel:
+      type: "object"
+      properties:
+        recipe_id:
+          type: "string"
+        name:
+          type: "string"
+        ingredients:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              qty:
+                type: number
+      required:
+        - "name"
+        - "ingredients"
     Empty:
       title: "Empty Schema"
       type: "object"

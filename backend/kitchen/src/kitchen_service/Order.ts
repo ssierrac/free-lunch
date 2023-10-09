@@ -7,8 +7,8 @@
  */
 export type OrderDBType = {
     order_id: string
-    order_status: OrderStatusEnum
-    recipe_name?: string
+    order_status?: OrderStatusEnum
+    recipe_id?: string
     order_created?: string
     order_last_modified_on?: string
 }
